@@ -90,6 +90,128 @@ In a Blazor WebAssembly app, the data is streamed directly into the .NET code wi
 
 In a Blazor Server app, the file data is streamed over the SignalR connection into .NET code on the server as the file is read from the stream. [`Forms.RemoteBrowserFileStreamOptions`](https://github.com/dotnet/aspnetcore/blob/master/src/Components/Web/src/Forms/InputFile/RemoteBrowserFileStreamOptions.cs) allows configuring file upload characteristics for Blazor Server.
 
+## Posting Files to ASPNET Server using HttpClient
+
+The `InputFile` component itself assists with collecting data about the file a user has selected. Using this data to post content to through an HTTP request requires additional logic using HttpClient.
+
+The following example demonstrates how to post and image file upload in a component using HttpClient.
+
+To post data from a user-selected file:
+
+@guardrex a duplicate of the text used at the top of the page. Feel free to omit or reference.
+
+* Call `Microsoft.AspNetCore.Components.Forms.IBrowserFile.OpenReadStream` on the file and read from the returned stream. For more information, see the [File streams](#file-streams) section.
+* The <xref:System.IO.Stream> returned by `OpenReadStream` enforces a maximum size in bytes of the `Stream` being read. By default, files no larger than 512,000 bytes (500 KB) in size are allowed to be read before any further reads would result in an exception. This limit is present to prevent developers from accidentally reading large files in to memory. The `maxAllowedSize` parameter on `Microsoft.AspNetCore.Components.Forms.IBrowserFile.OpenReadStream` can be used to specify a larger size if required.
+* Avoid reading the incoming file stream directly into memory. For example, don't copy file bytes into a <xref:System.IO.MemoryStream> or read as a byte array. These approaches can result in performance and security problems, especially in Blazor Server. Instead, consider copying file bytes to an external store, such as a a blob or a file on disk.
+
+* Create the HttpContent that will be sent as an HTTP request. A new MultipartFormDataContent is created and the file's content is added as a byte array. Ensure that the content's name and fileName arguments are specified when calling MultipartFormDataContent.Add. The name parameter should match the corresponding action method parameter on the server when using ASP.NET on the server.
+* Make a request to post the HttpContent. Using HttpClient use the PostAsync method using the desired request Uri and the MultipartFormDataContent. The HttpResponseMessage is awaited and can be used by the component to indicate the result stats of the response. In the following example EnsureSuccessStatusCode is used to throw an exception for a failed response, or the response's location value is used to indicate a successful post. Note: The location value is provided by the endpoint in this scenario when the endpoint returns a CreatedResult.
+
+```
+@page "/"
+@using System.IO
+@inject HttpClient Http
+
+<InputFile OnChange="LoadImage" />
+
+@if (imageDataUri is not null)
+{
+    <hr>
+    <label>Client-Side</label>
+    <img src="@imageDataUri" />
+    <hr>
+}
+
+@if (imageServerUri is not null)
+{
+    <label>Server-Side</label>
+    <img src="@imageServerUri" />
+    <br>
+}
+
+@code {
+    string imageDataUri;
+    string imageServerUri;
+
+    async Task LoadImage(InputFileChangeEventArgs e)
+    {
+
+        long maxFileSize = 1024 * 1024 * 15;
+
+        // On Client e.File is a IBrowserFile
+        // Read Data
+        var imageFile = await e.File.RequestImageFileAsync("image/jpeg", maxWith: 640, maxHeight: 480);
+        using Stream fileStream = imageFile.OpenReadStream(maxFileSize);
+        using MemoryStream ms = new();
+
+        await fileStream.CopyToAsync(ms);
+        byte[] fileBytes = ms.ToArray();
+
+        // Display Data as data:uri
+        imageDataUri = $"data:image/jpeg;base64,{Convert.ToBase64String(fileBytes)}";
+
+        // On server 'file' binds to IFormFile
+        // Post to server
+        using var content = new MultipartFormDataContent();
+        content.Add(
+            content: new ByteArrayContent(fileBytes),
+            name: "\"file\"", // name must match the endpoint's parameter name
+            fileName: e.File.Name
+            );
+
+        var response = await Http.PostAsync("/Filesave", content);
+
+        // Was the post a success?
+        response.EnsureSuccessStatusCode();
+
+        // Where was the resource saved?
+        imageServerUri = response.Headers.Location.ToString();
+
+    }
+
+}
+```
+
+```
+    [ApiController]
+    [Route("[controller]")]
+    public class FilesaveController : ControllerBase
+    {
+        private readonly IWebHostEnvironment env;
+        public FilesaveController(IWebHostEnvironment env)
+        {
+            this.env = env;
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> PostFile([FromForm] IEnumerable<IFormFile> file)
+        {
+            if (file == null) return new BadRequestResult();
+            
+            IFormFile f = file.First();
+
+            if (f.Length == 0) return new BadRequestResult();
+
+            string path = @$"{env.WebRootPath}\uploads\{f.FileName}";
+            
+            //foreach (var f in files)
+            //{
+
+                //if (f.Length == 0) return new BadRequestResult();
+
+                using MemoryStream ms = new();
+                await f.CopyToAsync(ms);
+                await System.IO.File.WriteAllBytesAsync(path, ms.ToArray());
+            //}
+            Uri resourcePath = new Uri($"{Request.Scheme}://{Request.Host}//uploads//{f.FileName}");
+
+
+            return new CreatedResult(resourcePath, null);
+        }
+```
+        
+
+
 ## Additional resources
 
 * <xref:mvc/models/file-uploads#security-considerations>
